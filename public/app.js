@@ -1,3 +1,5 @@
+import './style.css'
+import { io } from "socket.io-client";
 // DOM elements
 const nameInput = document.getElementById('name-input');
 const startBtn = document.getElementById('start-btn');
@@ -6,7 +8,7 @@ const videoSection = document.getElementById('video-section');
 const webcamVideo = document.getElementById('local-video');
 const remoteVideo = document.getElementById('remote-video');
 const peersList = document.getElementById('peers');
-
+const statusText = document.getElementById('status-text');
 // WebRTC configuration
 const configuration = {
     iceServers: [
@@ -20,16 +22,83 @@ const configuration = {
 };
 
 // Global State
-const socket = io();
-const pc=new RTCPeerConnection(configuration);
+const socket = io({autoConnect: false});
+let pc;
 let localStream;
 let remoteStream;
 let currentPeerId;
 let iceCandidateBuffer = []; // Buffer to store ICE candidates when no peer is selected
+let name;
+
+function disconnectCall() {
+    currentPeerId = null;
+    // TODO: research how to gracefully close the peer connection (close event listeners, etc.)
+    pc.close();
+}
+
+async function startNewOffer() {
+    pc = new RTCPeerConnection(configuration);
+
+    pc.onconnectionstatechange = () => {
+        statusText.textContent = pc.connectionState;
+        switch (pc.connectionState) {
+            case 'connected':
+                console.log('status: connected');
+                socket.disconnect();
+                peersList.innerHTML = '';
+                break;
+            case 'disconnected':
+                console.log('status: disconnected');
+                disconnectCall();
+                startNewOffer();
+                break;
+        }
+    }
+
+    // Add local stream
+    localStream.getTracks().forEach(track => {
+        pc.addTrack(track, localStream);
+    });
+
+    // Handle remote stream
+    remoteStream = new MediaStream();
+    remoteVideo.srcObject = remoteStream;
+    pc.ontrack = event => {
+        event.streams[0].getTracks().forEach((track) => {
+            remoteStream.addTrack(track);
+        });
+    };
+
+    // Handle ICE candidates
+    pc.onicecandidate = event => {
+        if (event.candidate)
+            if (!currentPeerId) {
+                iceCandidateBuffer.push(event.candidate.toJSON());
+                console.log('stored ice candidate in buffer:', event.candidate.toJSON());
+            } else {
+                socket.emit('ice-candidate', {
+                    targetId: currentPeerId,
+                    candidate: event.candidate.toJSON()
+                });
+            }
+    };
+
+    const offerDescription = await pc.createOffer();
+    await pc.setLocalDescription(offerDescription);
+
+    const offer = {
+        sdp: offerDescription.sdp,
+        type: offerDescription.type,
+    };
+
+    socket.connect();
+    socket.emit('offer', { name, offer });
+}
+
 
 // Start video call
 startBtn.addEventListener('click', async () => {
-    const name = nameInput.value.trim();
+    name = nameInput.value.trim();
     if (!name) {
         alert('Please enter your name');
         return;
@@ -38,49 +107,11 @@ startBtn.addEventListener('click', async () => {
     try {
         loginSection.style.display = 'none';
         videoSection.style.display = 'block';
-    
         localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        remoteStream = new MediaStream();
-        
-        // Add local stream
-        localStream.getTracks().forEach(track => {
-            pc.addTrack(track, localStream);
-        });
-    
-        // Handle remote stream
-        pc.ontrack = event => {
-            event.streams[0].getTracks().forEach((track) => {
-                remoteStream.addTrack(track);
-            });
-        };
-
         webcamVideo.srcObject = localStream;
-        remoteVideo.srcObject = remoteStream;
-        
-        // Handle ICE candidates
-        pc.onicecandidate = event => {
-            if (event.candidate) 
-                if (!currentPeerId) {
-                    iceCandidateBuffer.push(event.candidate.toJSON());
-                    console.log('stored ice candidate in buffer:', iceCandidateBuffer);
-                } else {
-                    console.log('ice candidate:',`${currentPeerId}`, event.candidate);
-                    socket.emit('ice-candidate', {
-                        targetId: currentPeerId,
-                        candidate: event.candidate.toJSON()
-                    });
-                }
-        };
-        
-        const offerDescription = await pc.createOffer();
-        await pc.setLocalDescription(offerDescription);
-
-        const offer = {
-          sdp: offerDescription.sdp,
-          type: offerDescription.type,
-        };
-        
-        socket.emit('offer', { name, offer });
+        /////////////////////////////////////////////////////////////////
+        await startNewOffer();
+        /////////////////////////////////////////////////////////////////
     } catch (error) {
         console.error('Error accessing media devices:', error);
         alert('Error accessing camera and microphone');
@@ -125,10 +156,8 @@ socket.on('answer', async ({ answer, from }) => {
         iceCandidateBuffer = [];
     }
     try {
-        console.log('answering:', answer);
         const answerDescription = new RTCSessionDescription(answer);
         await pc.setRemoteDescription(answerDescription);
-        console.log('answered:', answer);
     } catch (error) {
         console.error('Error setting remote description:', error);
     }
@@ -143,7 +172,6 @@ async function answerPeer(peerId, peerName, offer) {
     currentPeerId = peerId;
     
     try {
-        console.log('answering peer:', peerId, peerName, offer);
         // Set the remote description (offer) first
         await pc.setRemoteDescription(new RTCSessionDescription(offer));
         
@@ -156,15 +184,12 @@ async function answerPeer(peerId, peerName, offer) {
             sdp: answerDescription.sdp,
         };
 
-        console.log('answered peer:', peerId, peerName, answer);
         
         // Send the answer back to the peer
         socket.emit('answer', {
             targetId: peerId,
             answer: answer
         });
-        
-        console.log(`Answering call from ${peerName}`);
     } catch (error) {
         console.error('Error creating answer:', error);
     }

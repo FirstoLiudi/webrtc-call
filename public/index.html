@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WebRTC Video Call</title>
-    <link rel="stylesheet" href="styles.css">
 </head>
 <body>
     <div class="container">
@@ -15,8 +14,9 @@
         </div>
 
         <div id="video-section" style="display: none;">
+            <p id="status-text">Connecting...</p>
             <div class="video-container">
-                <video id="local-video" autoplay playsinline></video>
+                <video id="local-video" autoplay playsinline muted></video>
                 <video id="remote-video" autoplay playsinline></video>
             </div>
             <div id="peers-list">
@@ -25,8 +25,6 @@
             </div>
         </div>
     </div>
-
-    <script src="/socket.io/socket.io.js"></script>
-    <script src="app.js"></script>
+    <script type="module" src="/app.js"></script>
 </body>
 </html> 
